@@ -1,0 +1,105 @@
+# 3. Scale Up — Component-Split Infrastructure
+
+## Infrastructure Diagram
+
+```
+USER'S COMPUTER
+      │
+      │  HTTPS Request
+      ▼
+┌─────────────────────────────────────────────────────────┐
+│       LOAD BALANCER CLUSTER (HAProxy 1 + HAProxy 2)     │
+│                                                         │
+│  HAProxy 1 ◄──── Keepalived (VIP) ────► HAProxy 2      │
+│  (Active)                               (Active)        │
+│                                                         │
+│  Configured as Active-Active cluster                    │
+│  Virtual IP floats between them automatically           │
+└──────────────┬────────────────────────────┬─────────────┘
+               │                            │
+               ▼                            ▼
+    ┌──────────────────────┐   ┌────────────────────────┐
+    │   WEB SERVER         │   │   WEB SERVER           │
+    │   (Nginx)            │   │   (Nginx)              │
+    │   Dedicated server   │   │   Dedicated server     │
+    │   Serves static files│   │   Serves static files  │
+    │   Proxies dynamic    │   │   Proxies dynamic      │
+    └──────────┬───────────┘   └────────────┬───────────┘
+               │                            │
+               ▼                            ▼
+    ┌──────────────────────┐   ┌────────────────────────┐
+    │   APPLICATION SERVER │   │   APPLICATION SERVER   │
+    │   Dedicated server   │   │   Dedicated server     │
+    │   Runs app logic     │   │   Runs app logic       │
+    │   Codebase deployed  │   │   Codebase deployed    │
+    └──────────┬───────────┘   └────────────┬───────────┘
+               │                            │
+               └─────────────┬──────────────┘
+                             │
+                             ▼
+              ┌──────────────────────────────┐
+              │       DATABASE SERVER        │
+              │   MySQL Primary (writes)     │
+              │   Dedicated server           │
+              └──────────────────────────────┘
+```
+
+---
+
+## Why Each Element Was Added
+
+### 1 Additional Server (now 4+ servers total)
+**Why:** Splitting components onto dedicated servers eliminates the resource contention problem identified in Task 2. Each server is now optimized for its specific role:
+- **Web server** can be tuned for high concurrency (many simultaneous connections, large file transfers)
+- **Application server** can be tuned for CPU and memory (processing business logic)
+- **Database server** can be tuned for I/O throughput, RAM for caching, and storage
+
+Each layer can now be **independently scaled** — if the application server is the bottleneck, you add more application servers without touching the web or database tiers.
+
+### 1 Additional Load Balancer (HAProxy Cluster)
+**Why:** The single load balancer in Task 1 and Task 2 was itself a SPOF. If it failed, the entire site went down despite the backend servers being healthy.
+
+By adding a second HAProxy and configuring them as a **cluster using Keepalived**:
+- Both load balancers share a **Virtual IP (VIP)** address (the one DNS points to)
+- If the primary HAProxy fails, Keepalived automatically moves the VIP to the secondary HAProxy within seconds — **zero-downtime failover**
+- Both can run in Active-Active mode, both forwarding traffic simultaneously
+
+### Dedicated Web Server (Nginx)
+**Why:** Separating Nginx from the application server means:
+- Nginx handles what it's best at: serving static assets (CSS, JS, images), managing SSL, handling connection concurrency
+- It no longer competes for memory and CPU with the application runtime
+- Static file serving can be cached at this layer (CDN-like behavior)
+- Security boundary: the web server is the only entry point; it can be hardened independently
+
+### Dedicated Application Server
+**Why:** The application server runs the business logic — often memory-intensive, CPU-intensive, or requiring specific runtime environments (Python, Node.js, PHP-FPM). Isolating it means:
+- Memory/CPU tuning for the application runtime without affecting the web server
+- Independent scaling: add more app servers behind the web servers when logic is the bottleneck
+- Code deployments can restart the app server without restarting Nginx
+- Application crashes don't take down the web server
+
+### Dedicated Database Server
+**Why:** Databases are I/O and memory intensive. Placing MySQL on its own server means:
+- All available RAM can be allocated to the InnoDB buffer pool (dramatically improves performance)
+- Disk I/O is not shared with the web or app server processes
+- The database server can be configured with high-speed SSDs, RAID, or specialized storage
+- Security: the database port (3306) is not exposed to any network except the app server's private connection
+- Scaling: database can be migrated to a more powerful machine or replicated independently
+
+---
+
+## Application Server vs Web Server
+
+| | Web Server (Nginx) | Application Server |
+|---|---|---|
+| **Primary role** | Handles HTTP requests and responses | Executes application business logic |
+| **What it serves** | Static files: HTML, CSS, JS, images | Dynamic content: generated per request |
+| **Processing** | I/O-bound: many connections, file reads | CPU/memory-bound: code execution, data processing |
+| **Protocol** | HTTP/HTTPS directly with clients | Internal protocol with web server (FastCGI, uWSGI, HTTP) |
+| **Scalability** | Handles thousands of simultaneous connections | Scales by adding more processes/workers |
+| **Examples** | Nginx, Apache | Gunicorn, uWSGI, PHP-FPM, Node.js, Puma |
+| **Restart impact** | Restarting drops all connections briefly | Restarting only affects dynamic processing |
+
+**The web server is the front door. The application server is the engine room.**
+
+In a combined setup (Task 0), both run on the same machine and compete for the same resources. In a split setup (Task 3), each operates at peak efficiency within its own dedicated environment.
