@@ -1,0 +1,112 @@
+# 0. Simple Web Stack — One Server Infrastructure
+
+## Infrastructure Diagram
+
+```
+USER'S COMPUTER
+      │
+      │  (types www.foobar.com in browser)
+      │
+      ▼
+┌─────────────────┐
+│   DNS RESOLVER  │
+│                 │
+│ www.foobar.com  │──► A Record ──► 8.8.8.8
+└─────────────────┘
+      │
+      │  HTTP/HTTPS Request (TCP/IP)
+      │
+      ▼
+┌──────────────────────────────────────────────────────────┐
+│                  SERVER  IP: 8.8.8.8                     │
+│                                                          │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │           WEB SERVER (Nginx)                    │    │
+│  │  - Listens on port 80 (HTTP) / 443 (HTTPS)     │    │
+│  │  - Serves static files                          │    │
+│  │  - Forwards dynamic requests to App Server      │    │
+│  └──────────────────┬──────────────────────────────┘    │
+│                     │                                    │
+│  ┌──────────────────▼──────────────────────────────┐    │
+│  │         APPLICATION SERVER                      │    │
+│  │  - Runs the application logic (e.g. PHP/Python) │    │
+│  │  - Processes business rules                     │    │
+│  │  - Generates dynamic content                    │    │
+│  └──────────────────┬──────────────────────────────┘    │
+│                     │                                    │
+│  ┌──────────────────▼──────────────────────────────┐    │
+│  │            DATABASE (MySQL)                     │    │
+│  │  - Stores persistent data                       │    │
+│  │  - Responds to queries from App Server          │    │
+│  └─────────────────────────────────────────────────┘    │
+│                                                          │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │         APPLICATION FILES (Codebase)            │    │
+│  │  - HTML, CSS, JS, PHP/Python scripts            │    │
+│  └─────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Explanations
+
+### What is a server?
+A server is a physical or virtual machine that provides resources, services, or data to other computers (clients) over a network. It runs continuously to respond to incoming requests. In this infrastructure, it hosts Nginx, the application server, the codebase, and the MySQL database — all on one machine at IP 8.8.8.8.
+
+---
+
+### What is the role of the domain name?
+A domain name (foobar.com) is a human-readable address that maps to a machine-readable IP address (8.8.8.8). Without domain names, users would have to remember numeric IP addresses. The domain name system (DNS) translates `www.foobar.com` into `8.8.8.8` so the user's browser knows which server to contact.
+
+---
+
+### What type of DNS record is `www` in `www.foobar.com`?
+`www` is a **CNAME** (Canonical Name) record OR an **A** (Address) record depending on the configuration. In this infrastructure, `www.foobar.com` is configured as an **A record** that directly points to the IP address `8.8.8.8`.
+
+---
+
+### What is the role of the web server (Nginx)?
+The web server (Nginx) handles incoming HTTP/HTTPS requests from the user's browser. Its responsibilities include:
+- Listening on port 80 (HTTP) and/or 443 (HTTPS)
+- Serving static content (images, CSS, JS) directly and efficiently
+- Acting as a reverse proxy, forwarding dynamic requests to the application server
+- Managing SSL/TLS termination
+- Handling connection concurrency
+
+---
+
+### What is the role of the application server?
+The application server executes the business logic of the application. It:
+- Receives forwarded requests from Nginx
+- Runs the application code (e.g., PHP, Python, Node.js)
+- Processes user input, applies business rules, and generates dynamic content
+- Communicates with the MySQL database to read or write data
+- Returns the generated response back to Nginx, which delivers it to the user
+
+---
+
+### What is the role of the database (MySQL)?
+The database stores, organizes, and retrieves persistent data. It:
+- Stores user data, content, configurations, and transactions
+- Responds to SQL queries sent by the application server
+- Ensures data integrity and supports transactions
+- Persists data beyond individual request cycles
+
+---
+
+### What protocol does the server use to communicate with the user's computer?
+The server communicates using **HTTP (HyperText Transfer Protocol)** or **HTTPS (HTTP Secure)**, which run over **TCP/IP** (Transmission Control Protocol / Internet Protocol). The user's browser sends an HTTP request; the server responds with the HTML content over the same TCP connection.
+
+---
+
+## Issues with this Infrastructure
+
+### 1. SPOF (Single Point of Failure)
+This entire infrastructure runs on a single server. If that server experiences a hardware failure, power outage, OS crash, or network issue — the entire website goes down. There is no redundancy, no failover, and no backup server to take over. **100% of availability depends on 100% of one machine.**
+
+### 2. Downtime During Maintenance
+When deploying new code, Nginx typically needs to be restarted to reload configurations or serve updated application files. During this restart window — even if brief — the website is unavailable to users. Similarly, OS updates, database migrations, or SSL certificate renewals may require downtime. **There is no mechanism to perform zero-downtime deployments.**
+
+### 3. Cannot Scale Under High Traffic
+A single server has fixed CPU, RAM, and bandwidth limits. If traffic spikes (e.g., a viral post, a product launch), the server cannot horizontally scale by adding more machines. All components — web server, application server, and database — compete for the same resources. **Vertical scaling (adding more RAM/CPU to one machine) has hard limits and is expensive.** The architecture cannot distribute load across multiple servers.
