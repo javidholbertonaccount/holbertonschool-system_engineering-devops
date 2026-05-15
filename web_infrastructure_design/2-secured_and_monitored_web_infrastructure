@@ -1,0 +1,159 @@
+# 2. Secured and Monitored Web Infrastructure
+
+## Infrastructure Diagram
+
+```
+USER'S COMPUTER
+      │
+      │  HTTPS Request (port 443)
+      ▼
+┌─────────────────────────────────────────────────────────┐
+│              FIREWALL 1                                 │
+│  Allows: 443 (HTTPS), 80 (HTTP redirect)               │
+│  Blocks: everything else from internet                  │
+└──────────────────────┬──────────────────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────────────────┐
+│         LOAD BALANCER (HAProxy)                         │
+│         SSL Certificate installed here                  │
+│         Terminates HTTPS → HTTP internally              │
+│         [Monitoring Client 1]                           │
+└─────────────┬───────────────────────┬───────────────────┘
+              │                       │
+┌─────────────▼──────────┐ ┌──────────▼─────────────┐
+│      FIREWALL 2        │ │      FIREWALL 2         │
+│  Allows: internal only │ │  Allows: internal only  │
+└─────────────┬──────────┘ └──────────┬──────────────┘
+              │                       │
+    ┌─────────▼──────────┐  ┌─────────▼──────────┐
+    │     SERVER 1       │  │     SERVER 2        │
+    │                    │  │                     │
+    │  [Nginx Web Srv]   │  │  [Nginx Web Srv]    │
+    │  [App Server]      │  │  [App Server]       │
+    │  [Codebase]        │  │  [Codebase]         │
+    │  [MySQL Primary]   │  │  [MySQL Replica]    │
+    │  [Monitor Client2] │  │  [Monitor Client 3] │
+    └────────────────────┘  └─────────────────────┘
+              │                       │
+              └──── Monitoring data ──┘
+                           │
+                           ▼
+              ┌────────────────────────┐
+              │   SUMOLOGIC / DATADOG  │
+              │   (Monitoring Service) │
+              └────────────────────────┘
+```
+
+---
+
+## Why Each Element Was Added
+
+### 3 Firewalls
+**Firewall 1** — Protects the perimeter. Placed in front of the load balancer. Allows only HTTPS (443) and HTTP (80, for redirect to HTTPS) from the internet. Blocks all other ports, preventing direct access to internal services.
+
+**Firewalls 2 & 3** — Protect each application server. Placed between the load balancer and each server. Only allow traffic from the load balancer's internal IP on specific ports (e.g., 80 or 8080). Prevent the servers from being directly accessed even from within the network.
+
+### SSL Certificate (HTTPS for www.foobar.com)
+Added to encrypt all traffic between the user's browser and the load balancer. Without HTTPS, passwords, session tokens, and personal data travel in plaintext and can be intercepted. The SSL certificate proves the server's identity, preventing man-in-the-middle attacks.
+
+### 3 Monitoring Clients
+One monitoring agent is deployed on the load balancer and one on each server (3 total). They continuously collect metrics (CPU, RAM, disk, network I/O, request rates, error rates) and ship them to a centralized monitoring platform (Sumologic, Datadog, etc.), providing real-time visibility and alerting.
+
+---
+
+## What Are Firewalls For?
+
+Firewalls are network security devices (hardware or software) that **filter network traffic** based on predefined rules. They:
+- Allow only expected, legitimate traffic to reach services
+- Block unauthorized access attempts (port scanning, brute force, exploitation)
+- Isolate internal network segments (DMZ vs internal network)
+- Log suspicious activity for forensic analysis
+
+A server without a firewall exposes every running service to the entire internet by default.
+
+---
+
+## Why Traffic Is Served Over HTTPS
+
+HTTPS (HTTP Secure) uses **TLS (Transport Layer Security)** to encrypt data in transit. This is necessary because:
+
+1. **Confidentiality:** Encrypts user data (passwords, payment info) so it cannot be read if intercepted
+2. **Integrity:** Ensures data is not modified in transit (prevents injection attacks at the network level)
+3. **Authentication:** SSL certificate verifies the server is genuinely www.foobar.com (not an impersonator)
+4. **SEO & Trust:** Search engines rank HTTPS sites higher; browsers show security warnings for HTTP sites
+5. **Compliance:** GDPR, PCI-DSS, and HIPAA require encryption of data in transit
+
+---
+
+## What Monitoring Is Used For
+
+Monitoring provides **real-time and historical visibility** into system health and application behavior. It is used for:
+- **Alerting:** Notify engineers when CPU > 90%, disk is full, or error rates spike
+- **Incident diagnosis:** Correlate metrics to identify root cause of outages
+- **Capacity planning:** Track trends to predict when more resources are needed
+- **Performance optimization:** Identify slow queries, memory leaks, or bottlenecks
+- **Security:** Detect unusual traffic patterns, failed login spikes, or anomalous behavior
+- **SLA compliance:** Measure uptime and response times against commitments
+
+---
+
+## How the Monitoring Tool Collects Data
+
+Each server runs a **monitoring agent (client)** — a lightweight process that:
+1. Periodically samples local metrics: CPU usage, memory, disk I/O, network stats
+2. Reads application logs and parses error rates, request counts, response times
+3. Exposes metrics via an endpoint OR pushes them to the central monitoring service
+4. The central platform (Sumologic/Datadog) aggregates data, builds dashboards, and triggers alerts
+
+**Two collection methods:**
+- **Pull model:** Central platform scrapes each agent on a schedule (e.g., Prometheus)
+- **Push model:** Each agent ships data to the central platform continuously (e.g., Datadog, Sumologic)
+
+---
+
+## How to Monitor Web Server QPS (Queries Per Second)
+
+To monitor Nginx QPS:
+
+1. **Enable Nginx access logs** (default: `/var/log/nginx/access.log`)
+2. Configure the monitoring agent to **tail the access log** and count requests per second
+3. Alternatively, enable **Nginx stub_status** module:
+   ```
+   location /nginx_status {
+       stub_status;
+       allow 127.0.0.1;
+       deny all;
+   }
+   ```
+4. The monitoring agent scrapes `/nginx_status` periodically and calculates:
+   `QPS = (requests_now - requests_before) / time_interval`
+5. Plot QPS on a dashboard; set alerts for thresholds (e.g., alert if QPS > 10,000)
+
+---
+
+## Issues with This Infrastructure
+
+### 1. Terminating SSL at the Load Balancer Is an Issue
+
+When SSL is terminated at the load balancer:
+- Traffic between the load balancer and backend servers travels **unencrypted (HTTP)**
+- If an attacker gains access to the internal network, they can intercept plaintext traffic between the load balancer and servers
+- This is a risk in environments where the internal network is not trusted (e.g., multi-tenant data centers, cloud environments)
+- **Solution:** Use SSL passthrough (end-to-end encryption) or re-encrypt traffic from load balancer to servers (SSL bridging)
+
+### 2. Only One MySQL Server Capable of Accepting Writes
+
+The Primary-Replica setup means only the Primary accepts write operations. This creates:
+- **A write SPOF:** If the Primary fails, no writes can occur until the Replica is promoted — a manual process that takes time
+- **A write bottleneck:** All write traffic is funneled to one server regardless of load
+- **Replication lag risk:** If the Primary fails before replication completes, the Replica may have stale data — causing data loss
+- **Solution:** Implement multi-primary clustering (e.g., Galera Cluster) or automated failover (e.g., MySQL Group Replication)
+
+### 3. Servers with All the Same Components Is a Problem
+
+Running web server + application server + database on every machine causes:
+- **Resource contention:** The database competes with the web server and app server for RAM and CPU on the same machine — each component underperforms
+- **Security blast radius:** A compromise of the web layer (most exposed) immediately gives access to the database layer on the same machine
+- **Scaling inflexibility:** You cannot scale the database independently of the web server — adding a server adds all components, even if only one is the bottleneck
+- **Maintenance complexity:** Upgrading or restarting any single component risks affecting the others on the same host
+- **Solution:** Separate components onto dedicated servers (as shown in Task 3)
