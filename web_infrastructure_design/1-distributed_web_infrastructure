@@ -1,0 +1,147 @@
+# 1. Distributed Web Infrastructure
+
+## Infrastructure Diagram
+
+```
+USER'S COMPUTER
+      │
+      │  www.foobar.com → DNS A Record → 8.8.8.8
+      │
+      ▼  HTTP/HTTPS Request
+┌─────────────────────────────────┐
+│     LOAD BALANCER (HAProxy)     │
+│          IP: 8.8.8.8            │
+│   Algorithm: Round Robin        │
+│   Setup: Active-Active          │
+└──────────┬──────────────┬───────┘
+           │              │
+    ┌──────▼──────┐ ┌─────▼───────┐
+    │  SERVER 1   │ │  SERVER 2   │
+    │             │ │             │
+    │ ┌─────────┐ │ │ ┌─────────┐ │
+    │ │  Nginx  │ │ │ │  Nginx  │ │
+    │ │Web Srv  │ │ │ │Web Srv  │ │
+    │ └────┬────┘ │ │ └────┬────┘ │
+    │      │      │ │      │      │
+    │ ┌────▼────┐ │ │ ┌────▼────┐ │
+    │ │App Svr  │ │ │ │App Svr  │ │
+    │ │Codebase │ │ │ │Codebase │ │
+    │ └────┬────┘ │ │ └────┬────┘ │
+    └──────│──────┘ └──────│──────┘
+           │               │
+           │    Database   │
+           │    Cluster    │
+           ▼               ▼
+    ┌─────────────────────────────┐
+    │   MySQL PRIMARY (Server 1)  │◄─── Writes
+    │   (Master)                  │
+    └──────────────┬──────────────┘
+                   │ Replication
+    ┌──────────────▼──────────────┐
+    │   MySQL REPLICA (Server 2)  │◄─── Reads
+    │   (Slave)                   │
+    └─────────────────────────────┘
+```
+
+---
+
+## Why Each Element Was Added
+
+### Load Balancer (HAProxy)
+Added to distribute incoming traffic across multiple servers. Without it, all traffic hits a single server — creating a bottleneck and SPOF. HAProxy sits in front of both servers and routes requests intelligently, improving availability and performance.
+
+### 2 Servers (instead of 1)
+Added to eliminate the single point of failure from Task 0. If Server 1 fails, Server 2 continues to handle requests. Two servers also double the compute capacity for handling concurrent requests.
+
+### Nginx (Web Server) on each server
+Each server needs its own Nginx instance to handle HTTP requests, serve static files, and proxy dynamic requests to the local application server.
+
+### Application Server on each server
+Each server runs its own application server to process business logic independently. This enables parallel request processing and horizontal scalability.
+
+### Application Files (Codebase) on each server
+Both servers must have the same codebase deployed so they can serve identical responses regardless of which server handles the request.
+
+### MySQL Primary-Replica Cluster
+A single database would be a SPOF. The Primary-Replica setup ensures the data layer has redundancy: the Replica can be promoted if the Primary fails. It also allows read traffic to be distributed to the Replica, reducing load on the Primary.
+
+---
+
+## Load Balancer Distribution Algorithm
+
+### Round Robin
+HAProxy is configured with the **Round Robin** algorithm. It works as follows:
+- Request 1 → Server 1
+- Request 2 → Server 2
+- Request 3 → Server 1
+- Request 4 → Server 2
+- ... and so on cyclically
+
+Each server receives an equal share of requests over time. This is ideal when servers have equal capacity and request processing times are roughly uniform.
+
+---
+
+## Active-Active vs Active-Passive
+
+### Active-Active (this infrastructure)
+Both servers are **simultaneously active** and handling real user traffic. The load balancer distributes requests across all active nodes.
+- **Pros:** Maximum resource utilization; full horizontal scaling; no idle capacity
+- **Cons:** Requires session synchronization; both servers must be identical in config and code
+
+### Active-Passive
+One server is **active** (handling traffic), the other is **passive** (standby). The passive server only receives traffic if the active server fails.
+- **Pros:** Simpler to manage; no synchronization needed during normal operation
+- **Cons:** 50% of capacity sits idle; failover takes time (brief downtime during switch)
+
+**This infrastructure uses Active-Active** — both servers handle live traffic simultaneously.
+
+---
+
+## How Primary-Replica (Master-Slave) Database Works
+
+1. The **Primary (Master)** node accepts all **write** operations (INSERT, UPDATE, DELETE)
+2. Every write is recorded in the Primary's binary log
+3. The **Replica (Slave)** continuously reads the binary log from the Primary and **replays** the same operations on its own copy of the data
+4. The Replica's data stays synchronized with the Primary in near-real-time
+5. The Replica handles **read** queries (SELECT), reducing load on the Primary
+
+### Primary Node vs Replica Node (application perspective)
+| | Primary Node | Replica Node |
+|---|---|---|
+| **Accepts writes?** | YES | NO |
+| **Accepts reads?** | YES | YES |
+| **Application writes to** | Primary only | — |
+| **Application reads from** | Primary or Replica | Replica preferred |
+| **If this fails** | Data loss risk; writes stop | Read queries redirect to Primary |
+
+The **application must be configured** to send writes to the Primary and can optionally direct reads to the Replica for load distribution.
+
+---
+
+## Issues with This Infrastructure
+
+### 1. SPOF (Single Points of Failure)
+
+**The Load Balancer itself is a SPOF.**
+If HAProxy goes down, no traffic reaches either server — the entire site is unreachable regardless of whether the servers are healthy. There is only one load balancer with no redundancy.
+
+**The Primary database is a SPOF for writes.**
+If the Primary MySQL node fails, write operations (user registrations, transactions, updates) become impossible until the Replica is manually promoted to Primary. This requires intervention and causes downtime.
+
+### 2. Security Issues
+
+**No firewall.**
+All ports on all servers are exposed to the internet. An attacker can attempt connections to MySQL (port 3306), SSH (port 22), or internal application ports directly from anywhere on the internet.
+
+**No HTTPS.**
+Traffic between the user's browser and the load balancer is unencrypted HTTP. Sensitive data (passwords, payment info, personal data) is transmitted in plaintext and can be intercepted by anyone on the network path (man-in-the-middle attack).
+
+### 3. No Monitoring
+
+There is no visibility into:
+- Server health (CPU, RAM, disk usage)
+- Application errors and response times
+- Database replication lag
+- Unusual traffic patterns or attack indicators
+
+Without monitoring, failures are detected only when users report problems — often long after the issue began.
